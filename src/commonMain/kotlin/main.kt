@@ -1,8 +1,11 @@
 import com.soywiz.kds.IntArray2
+import com.soywiz.klock.DateTime
+import com.soywiz.klock.TimeSpan
 import com.soywiz.klock.milliseconds
+import com.soywiz.klock.seconds
 import com.soywiz.korev.Key
 import com.soywiz.korge.*
-import com.soywiz.korge.input.keys
+import com.soywiz.korge.annotations.KorgeExperimental
 import com.soywiz.korge.view.*
 import com.soywiz.korge.view.camera.Camera
 import com.soywiz.korge.view.camera.cameraContainer
@@ -23,109 +26,128 @@ enum class Walking {
     IDLE
 }
 
+sealed class Jumping {
+    class IsJumping(val start: DateTime) : Jumping()
+    object NotJumping : Jumping()
+}
+
 val theMap = IntArray2(
-        """
-            SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS
-            SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS
-            SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS
-            SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS
-            SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS
-            SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS
-            SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS
-            SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS
-            SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS
-            SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS
-            SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS
-            SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS
-            TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTSS
-            GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGSS
-        """.trimIndent(),
-        default = 0,
-        transform = mapOf(
-                'S' to SKY,
-                'T' to TOP,
-                'G' to GROUND
-        )
+    """
+        SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS
+        SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS
+        SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS
+        SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS
+        SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS
+        SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS
+        SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS
+        SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS
+        SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS
+        SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS
+        SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS
+        SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS
+        TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTSS
+        GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGSS
+    """.trimIndent(),
+    default = 0,
+    transform = mapOf(
+        'S' to SKY,
+        'T' to TOP,
+        'G' to GROUND
+    )
 )
 
-suspend fun main() = Korge(width = 1600, height = 896, bgcolor = Colors["#2b2b2b"]) {
-    val playerIdle = SpriteAnimation(
-            listOf(
-                    resourcesVfs["chars2/Female/Poses/female_idle.png"].readBitmap().slice()
-            )
+suspend fun animFromBitmaps(
+    basePath: String,
+    vararg frames: String,
+    extension: String = ".png",
+    animTime: TimeSpan = TimeSpan.NIL,
+): SpriteAnimation {
+    return SpriteAnimation(
+        frames.map { resourcesVfs["$basePath/$it$extension"].readBitmap().slice() },
+        animTime
     )
-    val playerWalk = SpriteAnimation(
-            listOf(
-                resourcesVfs["chars2/Female/Poses/female_walk1.png"].readBitmap().slice(),
-                resourcesVfs["chars2/Female/Poses/female_walk2.png"].readBitmap().slice(),
-            ),
-            200.milliseconds
-    )
+}
 
+@OptIn(KorgeExperimental::class)
+suspend fun main() = Korge(width = 1600, height = 896, bgcolor = Colors["#2b2b2b"]) {
+    val charPoses = "chars2/Female/Poses"
+    val playerIdle = animFromBitmaps(charPoses, "female_idle")
+    val playerWalk = animFromBitmaps(charPoses, "female_walk1", "female_walk2", animTime = 200.milliseconds)
+    val playerJump = animFromBitmaps(charPoses, "female_jump")
     val platforms = resourcesVfs["platforms/tilesheet_complete.png"].readBitmap().slice().split(BLOCK_SIZE, BLOCK_SIZE)
-    var playerX = 0.0
-    var playerY = 12.0
+
     val cam = Camera(0.0, 0.0, width, height)
-    val container = cameraContainer(width, height) {
+    cameraContainer(width, height) {
         theMap.each { x, y, v ->
             val tile = when (v) {
-                SKY -> {
-                    solidRect(BLOCK_SIZE, BLOCK_SIZE, Colors.ALICEBLUE)
-                }
-
-                TOP -> {
-                    image(platforms[2])
-                }
-
-                GROUND -> {
-                    image(platforms[0])
-                }
-
-                else -> error("???")
+                SKY -> solidRect(BLOCK_SIZE, BLOCK_SIZE, Colors.ALICEBLUE)
+                TOP -> image(platforms[2])
+                GROUND -> image(platforms[0])
+                else -> error("Unknown tile $v")
             }
 
             tile.xy(x * BLOCK_SIZE, y * BLOCK_SIZE)
+
+            // Quick and easy fix to avoid tearing between tiles
+            tile.scaleX = 1.008
+            tile.scaleY = 1.008
         }
 
+        val playerView = sprite(playerIdle).centered
 
-        val playerView = sprite(playerIdle)
+        var jumping: Jumping = Jumping.NotJumping
+        var walking: Walking
+        var playerX = 0.0
+        var playerY = 12.0
 
-
-        var walking = Walking.IDLE
         playerView.addUpdater { dt ->
-            when(walking) {
+            walking = when {
+                views.keys[Key.D] -> Walking.RIGHT
+                views.keys[Key.A] -> Walking.LEFT
+                else -> Walking.IDLE
+            }
+
+            val cJumping = jumping
+            if (views.keys[Key.SPACE] && jumping !is Jumping.IsJumping) {
+                jumping = Jumping.IsJumping(views.timeProvider.now())
+            }
+
+            if (cJumping is Jumping.IsJumping) {
+                if (views.timeProvider.now() - cJumping.start > 2.seconds) {
+                    jumping = Jumping.NotJumping
+                }
+            }
+
+            when (walking) {
                 Walking.IDLE -> {
                     playerView.playAnimation(playerIdle)
                 }
                 Walking.RIGHT -> {
                     playerView.playAnimation(playerWalk)
-                    playerX += dt.seconds
+                    playerX += dt.seconds * 3
                     scaleX = 1.0
                 }
                 Walking.LEFT -> {
                     playerView.playAnimation(playerWalk)
                     scaleX = -1.0
-                    playerX -= dt.seconds
+                    playerX -= dt.seconds * 3
                 }
             }
 
-            xy(playerX * BLOCK_SIZE, playerY * BLOCK_SIZE - playerView.height)
-        }
+            when (jumping) {
+                is Jumping.IsJumping -> {
+                    playerView.playAnimation(playerJump)
+                }
 
-        playerView.keys {
-            down(Key.D) {
-                walking = Walking.RIGHT
+                Jumping.NotJumping -> {
+                    // Do nothing
+                }
             }
 
-            down(Key.A) {
-                walking = Walking.LEFT
-            }
+            cam.x = (playerX - 6.0) * BLOCK_SIZE
+            xy(playerX * BLOCK_SIZE + (playerView.width / 2.0), playerY * BLOCK_SIZE - (playerView.height / 2.0))
         }
-    }
-
-
-    container.camera = cam
-    addUpdater {
-        cam.x = (playerX - 6.0) * BLOCK_SIZE
+    }.apply {
+        camera = cam
     }
 }
