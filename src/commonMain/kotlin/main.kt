@@ -68,12 +68,67 @@ suspend fun animFromBitmaps(
     )
 }
 
+class Entity(
+    var worldX: Double,
+    var worldY: Double,
+    var sprite: Sprite,
+    var animations: HashMap<String, SpriteAnimation>,
+    var speedMultiplier: Double = 1.0,
+    var walking: Walking = Walking.IDLE,
+    var jumping: Jumping = Jumping.NotJumping,
+) {
+    fun loop(dt: TimeSpan) {
+        var speedX = 0.0
+        var speedY = 0.0
+        when (walking) {
+            Walking.IDLE -> {
+                playAnimation(ANIM_IDLE)
+                speedX = 0.0 * speedMultiplier
+            }
+            Walking.RIGHT -> {
+                playAnimation(ANIM_WALK)
+                speedX = 3.0 * speedMultiplier
+                sprite.scaleX = 1.0
+            }
+            Walking.LEFT -> {
+                playAnimation(ANIM_WALK)
+                speedX = -3.0 * speedMultiplier
+                sprite.scaleX = -1.0
+            }
+        }
+
+        when (jumping) {
+            is Jumping.IsJumping -> {
+                playAnimation(ANIM_JUMP)
+            }
+
+            Jumping.NotJumping -> {
+                // Do nothing
+            }
+        }
+
+        worldX += speedX * dt.seconds
+        worldY += speedY * dt.seconds
+
+        sprite.xy(worldX * BLOCK_SIZE + (sprite.width / 2.0), worldY * BLOCK_SIZE - (sprite.height / 2.0))
+    }
+}
+
+fun Entity.playAnimation(anim: String) {
+    sprite.playAnimation(animations[anim] ?: return)
+}
+
+fun Entity.addToContainer(container: Container) {
+    container.addChild(sprite)
+    playAnimation(ANIM_IDLE)
+}
+
+const val ANIM_IDLE = "idle"
+const val ANIM_WALK = "walk"
+const val ANIM_JUMP = "jump"
+
 @OptIn(KorgeExperimental::class)
 suspend fun main() = Korge(width = 1600, height = 896, bgcolor = Colors["#2b2b2b"]) {
-    val charPoses = "chars2/Female/Poses"
-    val playerIdle = animFromBitmaps(charPoses, "female_idle")
-    val playerWalk = animFromBitmaps(charPoses, "female_walk1", "female_walk2", animTime = 200.milliseconds)
-    val playerJump = animFromBitmaps(charPoses, "female_jump")
     val platforms = resourcesVfs["platforms/tilesheet_complete.png"].readBitmap().slice().split(BLOCK_SIZE, BLOCK_SIZE)
 
     val cam = Camera(0.0, 0.0, width, height)
@@ -93,59 +148,49 @@ suspend fun main() = Korge(width = 1600, height = 896, bgcolor = Colors["#2b2b2b
             tile.scaleY = 1.008
         }
 
-        val playerView = sprite(playerIdle).centered
+        val player = run {
+            val charPoses = "chars2/Female/Poses"
+            val playerIdle = animFromBitmaps(charPoses, "female_idle")
+            val playerWalk = animFromBitmaps(charPoses, "female_walk1", "female_walk2", animTime = 200.milliseconds)
+            val playerJump = animFromBitmaps(charPoses, "female_jump")
 
-        var jumping: Jumping = Jumping.NotJumping
-        var walking: Walking
-        var playerX = 0.0
-        var playerY = 12.0
+            Entity(
+                0.0,
+                12.0,
+                Sprite(playerIdle).centered,
+                hashMapOf(
+                    ANIM_IDLE to playerIdle,
+                    ANIM_WALK to playerWalk,
+                    ANIM_JUMP to playerJump
+                )
+            )
+        }
 
-        playerView.addUpdater { dt ->
-            walking = when {
-                views.keys[Key.D] -> Walking.RIGHT
-                views.keys[Key.A] -> Walking.LEFT
-                else -> Walking.IDLE
+        player.addToContainer(this)
+
+        with(player) {
+            sprite.addUpdater { dt ->
+                walking = when {
+                    views.keys[Key.D] -> Walking.RIGHT
+                    views.keys[Key.A] -> Walking.LEFT
+                    else -> Walking.IDLE
+                }
+
+                val cJumping = jumping
+                if (views.keys[Key.SPACE] && jumping !is Jumping.IsJumping) {
+                    jumping = Jumping.IsJumping(views.timeProvider.now())
+                }
+
+                if (cJumping is Jumping.IsJumping) {
+                    if (views.timeProvider.now() - cJumping.start > 2.seconds) {
+                        jumping = Jumping.NotJumping
+                    }
+                }
+
+                player.loop(dt)
+
+                cam.x = (worldX - 6.0) * BLOCK_SIZE
             }
-
-            val cJumping = jumping
-            if (views.keys[Key.SPACE] && jumping !is Jumping.IsJumping) {
-                jumping = Jumping.IsJumping(views.timeProvider.now())
-            }
-
-            if (cJumping is Jumping.IsJumping) {
-                if (views.timeProvider.now() - cJumping.start > 2.seconds) {
-                    jumping = Jumping.NotJumping
-                }
-            }
-
-            when (walking) {
-                Walking.IDLE -> {
-                    playerView.playAnimation(playerIdle)
-                }
-                Walking.RIGHT -> {
-                    playerView.playAnimation(playerWalk)
-                    playerX += dt.seconds * 3
-                    scaleX = 1.0
-                }
-                Walking.LEFT -> {
-                    playerView.playAnimation(playerWalk)
-                    scaleX = -1.0
-                    playerX -= dt.seconds * 3
-                }
-            }
-
-            when (jumping) {
-                is Jumping.IsJumping -> {
-                    playerView.playAnimation(playerJump)
-                }
-
-                Jumping.NotJumping -> {
-                    // Do nothing
-                }
-            }
-
-            cam.x = (playerX - 6.0) * BLOCK_SIZE
-            xy(playerX * BLOCK_SIZE + (playerView.width / 2.0), playerY * BLOCK_SIZE - (playerView.height / 2.0))
         }
     }.apply {
         camera = cam
