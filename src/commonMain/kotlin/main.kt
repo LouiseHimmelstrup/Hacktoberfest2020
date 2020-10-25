@@ -357,21 +357,19 @@ suspend fun main() = Korge(width = 1600, height = 896, bgcolor = Colors["#2b2b2b
 
                 if (now > nextInteractionAllowedAt) {
                     var didInteract = false
-                    didInteract = didInteract || currentMap.attemptInteraction(
-                        condition = views.keys[Key.E],
-                        tile = Tile.LEVER_LEFT,
-                        x = worldX,
-                        y = worldY,
-                        handler = { currentMap.replaceTile(it.x, it.y, Tile.LEVER_RIGHT) }
-                    )
 
-                    didInteract = didInteract || currentMap.attemptInteraction(
-                        condition = views.keys[Key.E],
-                        tile = Tile.LEVER_RIGHT,
-                        x = worldX,
-                        y = worldY,
-                        handler = { currentMap.replaceTile(it.x, it.y, Tile.LEVER_LEFT) }
-                    )
+                    fun interact(tile: Tile, handler: (IntPair) -> Unit) {
+                        didInteract = didInteract || currentMap.attemptInteraction(
+                            views.keys[Key.E],
+                            tile,
+                            worldX,
+                            worldY,
+                            handler
+                        )
+                    }
+
+                    interact(Tile.LEVER_LEFT) { currentMap.replaceTile(it.x, it.y, Tile.LEVER_RIGHT) }
+                    interact(Tile.LEVER_RIGHT) { currentMap.replaceTile(it.x, it.y, Tile.LEVER_LEFT) }
 
                     if (didInteract) nextInteractionAllowedAt = now + 500.milliseconds
                 }
