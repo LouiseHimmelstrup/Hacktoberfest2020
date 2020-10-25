@@ -13,19 +13,9 @@ import com.soywiz.korim.color.*
 import com.soywiz.korim.font.readBitmapFont
 import com.soywiz.korim.format.*
 import com.soywiz.korio.file.std.*
-
-const val BLOCK_SIZE = 64
-
-const val SKY = 0
-const val TOP = 1
-const val GROUND = 2
-
-fun isBlockSolid(block: Int): Boolean = when (block) {
-    SKY -> false
-    TOP -> true
-    GROUND -> true
-    else -> error("invalid block $block")
-}
+import kotlin.math.max
+import kotlin.math.min
+import kotlin.properties.Delegates
 
 enum class Walking {
     LEFT,
@@ -38,7 +28,7 @@ sealed class Jumping {
     object NotJumping : Jumping()
 }
 
-val theMap = IntArray2(
+val map1 = IntArray2(
     """
         SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS
         SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS
@@ -49,19 +39,18 @@ val theMap = IntArray2(
         SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS
         SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS
         SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS
-        SSSSTGSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS
-        TGSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS
-        SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS
+        SSSSTGSSSSSSSSSSSSSSSSSSTTSSSSSSSSSSSS
+        SSSSSSSSSSSSSSSSSTTSSSSSSSSSSSSSSSSSSS
+        SSSSSLSSSTTSSSSSSSSSSSSSSSSSSSSSSSSSSS
         TGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGTG
         GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGSS
     """.trimIndent(),
-    default = 0,
-    transform = mapOf(
-        'S' to SKY,
-        'T' to TOP,
-        'G' to GROUND
-    )
+    gen = { c, x, y ->
+        Tile.values().find { it.id == c }?.ordinal ?: error("Unknown tile '$c'")
+    }
 )
+
+var currentMap: TileMap by Delegates.notNull()
 
 suspend fun animFromBitmaps(
     basePath: String,
@@ -90,20 +79,47 @@ class Entity(
     private var jumping: Jumping = Jumping.NotJumping
     var screenWidth = sprite.width
     var screenHeight = sprite.height
-    var worldWidth = screenWidth / BLOCK_SIZE.toDouble()
-    var worldHeight = screenHeight / BLOCK_SIZE.toDouble()
+    var worldWidth = screenWidth / TILE_SIZE.toDouble()
+    var worldHeight = screenHeight / TILE_SIZE.toDouble()
 
     var worldWidthCeil = worldWidth.toIntCeil()
     var worldHeightCeil = worldHeight.toIntCeil()
 
     var canJump = false
 
+    // TODO This set of functions is extremely inconsistent
+    @OptIn(ExperimentalStdlibApi::class)
+    fun tilesInFrontOfMe(): Set<IntPair> {
+        return buildSet {
+            for (dy in 0 until worldHeightCeil) {
+                // Tiny smudge factor introduced to avoid getting stuck on the ground
+                val element = IntPair((worldX + worldWidth).toIntFloor(), (worldY - dy - 0.100).toIntFloor())
+                if (element.x >= 0 && element.x < currentMap.worldWidth && element.y >= 0 && element.y < currentMap.worldHeight) {
+                    add(element)
+                }
+            }
+        }
+    }
+
+    @OptIn(ExperimentalStdlibApi::class)
+    fun tilesBehindMe(): Set<IntPair> {
+        return buildSet {
+            for (dy in 0 until worldHeightCeil) {
+                // Tiny smudge factor introduced to avoid getting stuck on the ground
+                val element = IntPair((worldX).toIntFloor(), (worldY - dy - 0.100).toIntFloor())
+                if (element.x >= 0 && element.x < currentMap.worldWidth && element.y >= 0 && element.y < currentMap.worldHeight) {
+                    add(element)
+                }
+            }
+        }
+    }
+
     @OptIn(ExperimentalStdlibApi::class)
     fun tilesAboveMe(): Set<IntPair> {
         return buildSet {
             for (dx in 0 until worldWidthCeil) {
                 val element = IntPair((worldX + dx).toIntFloor(), (worldY - worldHeightCeil).toIntFloor())
-                if (element.x >= 0 && element.x < theMap.width && element.y >= 0 && element.y < theMap.height) {
+                if (element.x >= 0 && element.x < currentMap.worldWidth && element.y >= 0 && element.y < currentMap.worldHeight) {
                     add(element)
                 }
             }
@@ -115,7 +131,7 @@ class Entity(
         return buildSet {
             for (dx in 0 until worldWidthCeil) {
                 val element = IntPair((worldX + dx).toIntFloor(), (worldY).toIntFloor())
-                if (element.x >= 0 && element.x < theMap.width && element.y >= 0 && element.y < theMap.height) {
+                if (element.x >= 0 && element.x < currentMap.worldWidth && element.y >= 0 && element.y < currentMap.worldHeight) {
                     add(element)
                 }
             }
@@ -132,13 +148,19 @@ class Entity(
             }
             Walking.RIGHT -> {
                 playAnimation(ANIM_WALK)
-                speedX = 3.0 * speedMultiplier
-                sprite.scaleX = 1.0
+
+                if (tilesInFrontOfMe().none { currentMap.getTile(it.x, it.y).isSolid }) {
+                    speedX = 3.0 * speedMultiplier
+                    sprite.scaleX = 1.0
+                }
             }
             Walking.LEFT -> {
                 playAnimation(ANIM_WALK)
-                speedX = -3.0 * speedMultiplier
-                sprite.scaleX = -1.0
+
+                if (tilesBehindMe().none { currentMap.getTile(it.x, it.y).isSolid }) {
+                    speedX = -3.0 * speedMultiplier
+                    sprite.scaleX = -1.0
+                }
             }
         }
 
@@ -152,16 +174,17 @@ class Entity(
         when (cJumping) {
             is Jumping.IsJumping -> {
                 playAnimation(ANIM_JUMP)
-                if (tilesAboveMe().none { isBlockSolid(theMap[it.x, it.y]) }) {
+                if (tilesAboveMe().none { currentMap.getTile(it.x, it.y).isSolid }) {
                     speedY = -3.0
                 }
             }
 
             Jumping.NotJumping -> {
                 // Apply gravity
-                if (tilesBelowMe().none { isBlockSolid(theMap[it.x, it.y]) }) {
+                if (tilesBelowMe().none { currentMap.getTile(it.x, it.y).isSolid }) {
                     speedY = 3.0
                     playAnimation(ANIM_FALL)
+                    canJump = false
                 } else {
                     canJump = true
                 }
@@ -172,12 +195,31 @@ class Entity(
         worldY += speedY * dt.seconds
 
         run {
+            if (speedX > 0) {
+                val afterUpdate = tilesInFrontOfMe()
+                if (afterUpdate.any { currentMap.getTile(it.x, it.y).isSolid }) {
+                    val x = afterUpdate.first().x.toDouble()
+                    worldX = min(worldX, x - 1)
+                }
+            }
+        }
+
+        run {
+            if (speedX < 0) {
+                val afterUpdate = tilesBehindMe()
+                if (afterUpdate.any { currentMap.getTile(it.x, it.y).isSolid }) {
+                    val x = afterUpdate.first().x.toDouble()
+                    worldX = max(worldX, x)
+                }
+            }
+        }
+
+        run {
             if (speedY < 0) {
                 val aboveAfterUpdate = tilesAboveMe()
-                if (aboveAfterUpdate.any { isBlockSolid(theMap[it.x, it.y]) }) {
+                if (aboveAfterUpdate.any { currentMap.getTile(it.x, it.y).isSolid }) {
                     val toDouble = aboveAfterUpdate.first().y.toDouble()
-                    println("Colliding with $toDouble")
-                    worldY = toDouble + 1.0 + worldHeight
+                    worldY = max(worldY, toDouble + 1.0 + worldHeight)
                 }
             }
         }
@@ -185,19 +227,19 @@ class Entity(
         run {
             if (speedY > 0) {
                 val belowAfterUpdate = tilesBelowMe()
-                if (belowAfterUpdate.any { isBlockSolid(theMap[it.x, it.y]) }) {
-                    worldY = belowAfterUpdate.first().y.toDouble()
+                if (belowAfterUpdate.any { currentMap.getTile(it.x, it.y).isSolid }) {
+                    worldY = min(worldY, belowAfterUpdate.first().y.toDouble())
                 }
             }
         }
 
         // Clamp coordinates to map
         if (worldX < 0) worldX = 0.0
-        if (worldX > theMap.width - 1.0) worldX = theMap.width - 1.0
+        if (worldX > currentMap.width - 1.0) worldX = currentMap.width - 1.0
         if (worldY < 0) worldY = 0.0
-        if (worldY > theMap.height) worldY = theMap.height.toDouble()
+        if (worldY > currentMap.height) worldY = currentMap.height
 
-        sprite.xy(worldX * BLOCK_SIZE + (sprite.width / 2.0), worldY * BLOCK_SIZE - (sprite.height / 2.0))
+        sprite.xy(worldX * TILE_SIZE + (sprite.width / 2.0), worldY * TILE_SIZE - (sprite.height / 2.0))
     }
 
     fun jump(views: Views) {
@@ -216,9 +258,9 @@ fun Entity.addToContainer(container: Container, views: Views) {
     container.addChild(sprite)
     playAnimation(ANIM_IDLE)
 
-        sprite.addUpdater { dt ->
-            loop(dt, views)
-        }
+    sprite.addUpdater { dt ->
+        loop(dt, views)
+    }
 }
 
 fun Entity.addZombieAI(views: Views) {
@@ -245,24 +287,12 @@ fun addDebug(debug: String) {
 
 @OptIn(KorgeExperimental::class)
 suspend fun main() = Korge(width = 1600, height = 896, bgcolor = Colors["#2b2b2b"]) {
-    val platforms = resourcesVfs["platforms/tilesheet_complete.png"].readBitmap().slice().split(BLOCK_SIZE, BLOCK_SIZE)
+    val tiles = Tiles()
+    tiles.load()
 
     val cam = Camera(0.0, 0.0, width, height)
     cameraContainer(width, height) {
-        theMap.each { x, y, v ->
-            val tile = when (v) {
-                SKY -> solidRect(BLOCK_SIZE, BLOCK_SIZE, Colors.ALICEBLUE)
-                TOP -> image(platforms[2])
-                GROUND -> image(platforms[0])
-                else -> error("Unknown tile $v")
-            }
-
-            tile.xy(x * BLOCK_SIZE, y * BLOCK_SIZE)
-
-            // Quick and easy fix to avoid tearing between tiles
-            tile.scaleX = 1.008
-            tile.scaleY = 1.008
-        }
+        addChild(TileMap(tiles, map1).also { currentMap = it })
 
         val player = run {
             val charPoses = "chars2/Female/Poses"
@@ -273,7 +303,7 @@ suspend fun main() = Korge(width = 1600, height = 896, bgcolor = Colors["#2b2b2b
 
             Entity(
                 0.0,
-                12.0,
+                11.990,
                 Sprite(playerIdle).centered,
                 hashMapOf(
                     ANIM_IDLE to playerIdle,
@@ -312,7 +342,9 @@ suspend fun main() = Korge(width = 1600, height = 896, bgcolor = Colors["#2b2b2b
         testZombie.addZombieAI(views)
 
         with(player) {
+            var nextInteractionAllowedAt = views.timeProvider.now()
             sprite.addUpdater { dt ->
+                val now = views.timeProvider.now()
                 walking = when {
                     views.keys[Key.D] -> Walking.RIGHT
                     views.keys[Key.A] -> Walking.LEFT
@@ -323,11 +355,29 @@ suspend fun main() = Korge(width = 1600, height = 896, bgcolor = Colors["#2b2b2b
                     jump(views)
                 }
 
+                if (now > nextInteractionAllowedAt) {
+                    var didInteract = false
+                    didInteract = didInteract || currentMap.attemptInteraction(
+                        condition = views.keys[Key.E],
+                        tile = Tile.LEVER_LEFT,
+                        x = worldX,
+                        y = worldY,
+                        handler = { currentMap.replaceTile(it.x, it.y, Tile.LEVER_RIGHT) }
+                    )
+
+                    didInteract = didInteract || currentMap.attemptInteraction(
+                        condition = views.keys[Key.E],
+                        tile = Tile.LEVER_RIGHT,
+                        x = worldX,
+                        y = worldY,
+                        handler = { currentMap.replaceTile(it.x, it.y, Tile.LEVER_LEFT) }
+                    )
+
+                    if (didInteract) nextInteractionAllowedAt = now + 500.milliseconds
+                }
+
                 addDebug("PlayerWorldX: $worldX, PlayerWorldY: $worldY")
-                addDebug("PlayerWorldWidth: $worldWidth, PlayerWorldHeight: $worldHeight")
-                addDebug("Above: ${tilesAboveMe()}")
-                addDebug("Below: ${tilesBelowMe()}")
-                cam.x = (worldX - 6.0) * BLOCK_SIZE
+                cam.x = (worldX - 6.0) * TILE_SIZE
             }
         }
 
